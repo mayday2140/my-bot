@@ -5,6 +5,7 @@ from datetime import datetime
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
+# --- 設定檔管理 ---
 CONFIG_FILE = "config.txt"
 
 def load_config_txt():
@@ -27,23 +28,31 @@ def load_config_txt():
             for line in f:
                 if "=" in line:
                     k, v = line.split("=", 1)
-                    # 自動去掉空格、逗號、換行符號
-                    conf[k.strip()] = v.strip().replace(",", "").replace(" ", "")
+                    # 自動清理：去掉空格、逗號、引號
+                    val = v.strip().replace(",", "").replace(" ", "").replace('"', '')
+                    conf[k.strip()] = val
         
-        # 強大容錯：過濾非數字字元
-        def clean_to_int(raw, default):
-            try:
-                num_part = "".join(filter(str.isdigit, str(raw)))
-                return int(num_part) if num_part else default
-            except: return default
+        # 強制清理數字字元，防止 '8,' 這種錯誤
+        def safe_int(key, default):
+            raw = conf.get(key, str(default))
+            num = "".join(filter(str.isdigit, raw))
+            return int(num) if num else default
 
-        conf['TARGET_BPS'] = clean_to_int(conf.get('TARGET_BPS'), 8)
-        conf['MIN_BPS'] = clean_to_int(conf.get('MIN_BPS'), 7)
-        conf['MAX_BPS'] = clean_to_int(conf.get('MAX_BPS'), 10)
-        return conf
+        config_data = {
+            "JWT": conf.get("JWT", ""),
+            "SECRET": conf.get("SECRET", ""),
+            "SYMBOL": conf.get("SYMBOL", "BTC-USD"),
+            "QTY": conf.get("QTY", "1.01"),
+            "TARGET_BPS": safe_int("TARGET_BPS", 8),
+            "MIN_BPS": safe_int("MIN_BPS", 7),
+            "MAX_BPS": safe_int("MAX_BPS", 10)
+        }
+        return config_data
     except Exception as e:
-        print(f"讀取設定檔失敗: {e}"); input("按鍵退出..."); sys.exit()
+        print(f"讀取設定檔發生錯誤: {e}")
+        input("按任意鍵退出..."); sys.exit()
 
 CONFIG = load_config_txt()
 
-# ... [此處接續您原本的 StandXCMD 類別代碼] ...
+# --- 核心邏輯 (StandXCMD) ---
+# [此處請保留您原本的 StandXCMD 類別內容]
