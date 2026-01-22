@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-import requests, time, json, uuid, base64, os, sys, threading, math
+import requests, time, json, uuid, base64, os, sys, threading
 import websocket
 from datetime import datetime
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
-# --- 1. 設定檔讀取邏輯 ---
+# --- 1. 設定檔管理 ---
 CONFIG_FILE = "config.txt"
 
 def load_config_txt():
@@ -15,7 +15,7 @@ def load_config_txt():
             f.write("JWT=請貼上你的JWT\n")
             f.write("SECRET=請貼上你的私鑰\n")
             f.write("SYMBOL=BTC-USD\n")
-            f.write("QTY=1.01\n")
+            f.write("QTY=0.01\n")
             f.write("TARGET_BPS=8\n")
             f.write("MIN_BPS=7\n")
             f.write("MAX_BPS=10\n")
@@ -23,40 +23,33 @@ def load_config_txt():
         input("按任意鍵退出..."); sys.exit()
 
     conf = {}
-    try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            for line in f:
-                if "=" in line:
-                    k, v = line.split("=", 1)
-                    val = v.strip().replace(",", "").replace(" ", "").replace('"', '')
-                    conf[k.strip()] = val
-        
-        def safe_int(key, default):
-            raw = conf.get(key, str(default))
-            num = "".join(filter(str.isdigit, raw))
-            return int(num) if num else default
+    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            if "=" in line:
+                k, v = line.split("=", 1)
+                conf[k.strip()] = v.strip().replace(",", "").replace(" ", "")
 
-        return {
-            "JWT": conf.get("JWT", ""),
-            "SECRET": conf.get("SECRET", ""),
-            "SYMBOL": conf.get("SYMBOL", "BTC-USD"),
-            "QTY": conf.get("QTY", "1.01"),
-            "TARGET_BPS": safe_int("TARGET_BPS", 8),
-            "MIN_BPS": safe_int("MIN_BPS", 7),
-            "MAX_BPS": safe_int("MAX_BPS", 10)
-        }
-    except Exception as e:
-        print(f"讀取錯誤: {e}"); input("按鍵退出..."); sys.exit()
+    def safe_int(key, default):
+        raw = conf.get(key, str(default))
+        num = "".join(filter(str.isdigit, raw))
+        return int(num) if num else default
+
+    return {
+        "JWT": conf.get("JWT", ""),
+        "SECRET": conf.get("SECRET", ""),
+        "SYMBOL": conf.get("SYMBOL", "BTC-USD"),
+        "QTY": conf.get("QTY", "0.01"),
+        "TARGET_BPS": safe_int("TARGET_BPS", 8)
+    }
 
 CONFIG = load_config_txt()
 
-# --- 2. 交易核心邏輯 (StandXCMD) ---
-class StandXCMD:
+# --- 2. 交易核心邏輯 ---
+class StandXBot:
     def __init__(self):
         self.base_url = "https://perps.standx.com"
         self.ws_url = "wss://perps.standx.com/ws-stream/v1"
         self.mid_price = 0.0
-        self.running = True
         pk = CONFIG["SECRET"][2:] if CONFIG["SECRET"].startswith("0x") else CONFIG["SECRET"]
         self.signer = SigningKey(pk, encoder=HexEncoder)
         self.headers = {"Authorization": f"Bearer {CONFIG['JWT']}", "Content-Type": "application/json"}
@@ -64,8 +57,8 @@ class StandXCMD:
 
     def start_ws(self):
         def on_msg(ws, msg):
-            d = json.loads(msg).get("data", {})
-            if "mid_price" in d: self.mid_price = float(d["mid_price"])
+            data = json.loads(msg).get("data", {})
+            if "mid_price" in data: self.mid_price = float(data["mid_price"])
         def run():
             ws = websocket.WebSocketApp(self.ws_url, 
                 on_open=lambda ws: ws.send(json.dumps({"subscribe": {"channel": "price", "symbol": CONFIG["SYMBOL"]}})),
@@ -79,29 +72,37 @@ class StandXCMD:
         sig = base64.b64encode(self.signer.sign(msg.encode()).signature).decode()
         return {"x-request-sign-version": "v1", "x-request-id": rid, "x-request-timestamp": ts, "x-request-signature": sig}
 
-    def main_loop(self):
-        while self.running:
-            try:
-                if self.mid_price == 0:
-                    time.sleep(1); continue
-                os.system('cls' if os.name == 'nt' else 'clear')
-                print(f"==========================================")
-                print(f"   StandX 交易機器人 (運行中)")
-                print(f"==========================================")
-                print(f" 💰 當前價格: {self.mid_price:,.2f}")
-                print(f" ⚙️  QTY: {CONFIG['QTY']} | BPS: {CONFIG['TARGET_BPS']}")
-                print(f"------------------------------------------")
-                time.sleep(1)
-            except KeyboardInterrupt:
-                self.running = False; break
+    def place_order(self, side, price):
+        path = "/api/v1/orders"
+        order_data = {
+            "symbol": CONFIG["SYMBOL"],
+            "side": side,
+            "type": "LIMIT",
+            "price": str(price),
+            "qty": CONFIG["QTY"]
+        }
+        body = json.dumps(order_data)
+        try:
+            res = requests.post(self.base_url + path, data=body, headers={**self.headers, **self.sign(body)}, timeout=3)
+            return res.json()
+        except Exception as e:
+            return {"error": str(e)}
 
-# --- 3. 程式進入點 ---
-if __name__ == "__main__":
-    try:
-        if sys.platform == "win32": os.system('') 
-        print(">>> 正在初始化交易引擎...")
-        bot = StandXCMD()
-        bot.main_loop()
-    except Exception as e:
-        print(f"\n❌ 發生錯誤: {e}")
-        input("\n按任意鍵結束並關閉視窗...")
+    def run_trading(self):
+        print(f">>> 啟動自動掛單 (目標: {CONFIG['SYMBOL']})")
+        while True:
+            if self.mid_price == 0:
+                time.sleep(1); continue
+            
+            # 計算買賣價格 (根據 BPS)
+            spread = self.mid_price * (CONFIG["TARGET_BPS"] / 10000)
+            bid_px = round(self.mid_price - spread, 2)
+            ask_px = round(self.mid_price + spread, 2)
+
+            os.system('cls' if os.name == 'nt' else 'clear')
+            print(f"--- StandX 交易中 --- {datetime.now().strftime('%H:%M:%S')}")
+            print(f"當前市價: {self.mid_price:,.2f}")
+            print(f"嘗試掛單: 買入 {bid_px} | 賣出 {ask_px}")
+            
+            # 送出訂單
+            r_bid = self
