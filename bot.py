@@ -25,7 +25,7 @@ C = load_config()
 
 class StandXBot:
     def __init__(self):
-        # 修正：BASE_URL 保持為主網域，路徑由內部嘗試
+        # 修正：BASE_URL 應保持為主網域
         self.base_url = C.get("BASE_URL", "https://perps.standx.com").rstrip('/')
         self.ws_url = "wss://perps.standx.com/ws-stream/v1"
         self.mid_price = 0.0
@@ -59,10 +59,10 @@ class StandXBot:
         return {"x-request-sign-version": "v1", "x-request-id": rid, "x-request-timestamp": ts, "x-request-signature": sig}
 
     def place_order(self, side, price):
-        # 下單路徑深度探測
-        endpoints = ["/api/v1/orders", "/api/orders"]
+        # 針對 StandX 可能的 API 路徑進行探測
+        endpoints = ["/api/orders", "/api/v1/orders"]
         
-        # 價格校準：根據成功截圖，BTC 價格使用整數
+        # 價格格式校準：根據成功截圖，BTC 價格使用整數
         px_str = str(round(price))
         data = {
             "symbol": C.get("SYMBOL", "BTC-USD"),
@@ -71,6 +71,7 @@ class StandXBot:
             "price": px_str,
             "qty": str(C.get("ORDER_QTY", "0.05"))
         }
+        # 強制使用緊湊型 JSON，避免多餘空格導致 403/404
         body = json.dumps(data, separators=(',', ':'))
         
         last_status = "404"
@@ -81,11 +82,11 @@ class StandXBot:
                 if res.status_code == 200: return "成功 ✅"
                 last_status = str(res.status_code)
             except:
-                last_status = "連線超時"
+                last_status = "連線失敗"
         return f"失敗({last_status})"
 
     def run(self):
-        print(f"機器人已啟動 | 數量: {C.get('ORDER_QTY')} | 頻率: {C.get('REFRESH_RATE')}s")
+        print(f"機器人運行中 | 目標數量: {C.get('ORDER_QTY')} | 頻率: {C.get('REFRESH_RATE')}s")
         while True:
             if self.mid_price == 0:
                 time.sleep(0.1); continue
