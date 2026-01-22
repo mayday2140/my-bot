@@ -5,14 +5,14 @@ from datetime import datetime
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
-# --- 1. 設定檔管理 ---
+# --- 1. 設定檔讀取 (精確匹配你的變數名) ---
 CONFIG_FILE = "config.txt"
 
 def load_config_txt():
     if not os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             f.write("JWT_TOKEN=你的JWT\nPRIVATE_KEY_HEX=你的私鑰\nSYMBOL=BTC-USD\nBASE_URL=https://perps.standx.com\nORDER_QTY=0.1\nTARGET_BPS=8\nMIN_BPS=6\nMAX_BPS=10\nREFRESH_RATE=0.5\n")
-        print("已產生 config.txt，請填寫後重開。")
+        print("已產生 config.txt，請填寫並存檔。")
         input(); sys.exit()
 
     conf = {}
@@ -43,7 +43,11 @@ class StandXBot:
         pk = CONFIG["PRIVATE_KEY_HEX"]
         if pk.startswith("0x"): pk = pk[2:]
         self.signer = SigningKey(pk, encoder=HexEncoder)
-        self.headers = {"Authorization": f"Bearer {CONFIG['JWT_TOKEN']}", "Content-Type": "application/json"}
+        self.headers = {
+            "Authorization": f"Bearer {CONFIG['JWT_TOKEN']}", 
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
         self.start_ws()
 
     def start_ws(self):
@@ -66,32 +70,39 @@ class StandXBot:
         return {"x-request-sign-version": "v1", "x-request-id": rid, "x-request-timestamp": ts, "x-request-signature": sig}
 
     def place_order(self, side, price):
-        # 針對 StandX 更新後的各種路徑進行嘗試
-        routes = ["/api/v1/orders", "/api/orders", "/orders/v1", "/orders"]
-        px = str(round(price * 2) / 2)
+        # 針對 StandX 核心路徑進行精準探測
+        # StandX 新版路徑通常是 /v1/api/orders
+        endpoints = ["/v1/api/orders", "/api/v1/orders", "/orders"]
+        px = str(round(price * 2) / 2) # BTC 精度校準
         data = {"symbol": CONFIG["SYMBOL"], "side": side, "type": "LIMIT", "price": px, "qty": str(CONFIG["ORDER_QTY"])}
         body = json.dumps(data)
         
-        last_status = "404"
-        for path in routes:
+        last_code = "404"
+        for path in endpoints:
             try:
                 url = self.base_url + path
                 res = requests.post(url, data=body, headers={**self.headers, **self.sign(body)}, timeout=3)
                 if res.status_code == 200: return "成功 ✅"
-                last_status = str(res.status_code)
+                last_code = str(res.status_code)
+                # 如果回傳 401 代表認證失敗，直接中斷重測
+                if res.status_code == 401: return "驗證失敗(401)"
             except: pass
-        return f"失敗({last_status})"
+        return f"失敗({last_code})"
 
     def run(self):
-        print(f"StandX 運行中 | 頻率: {CONFIG['REFRESH_RATE']}s")
+        print(f"StandX 機器人啟動中 | 頻率: {CONFIG['REFRESH_RATE']}s")
         while True:
             if self.mid_price == 0:
                 time.sleep(0.1); continue
+            
             gap = self.mid_price * (CONFIG["TARGET_BPS"] / 10000)
             bid, ask = self.mid_price - gap, self.mid_price + gap
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Px: {self.mid_price:,.2f} | Buy: {self.place_order('BUY', bid)} | Sell: {self.place_order('SELL', ask)}")
+
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Px: {self.mid_price:,.2f} | 買: {self.place_order('BUY', bid)} | 賣: {self.place_order('SELL', ask)}")
             time.sleep(CONFIG["REFRESH_RATE"])
 
 if __name__ == "__main__":
-    try: StandXBot().run()
-    except Exception as e: print(f"致命錯誤: {e}"); input()
+    try:
+        StandXBot().run()
+    except Exception as e:
+        print(f"致命錯誤: {e}"); input()
