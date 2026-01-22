@@ -1,31 +1,22 @@
 name: Build EXE
-
-on:
-  workflow_dispatch:
-
+on: workflow_dispatch
 jobs:
   build:
     runs-on: windows-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests websocket-client pynacl pyinstaller cffi
-
       - name: Build EXE
-        shell: pwsh
         run: |
-          # 確保所有加密與網路依賴都被完整打包
           pyinstaller --onefile --console --name ProcyonsBot --collect-all cffi --collect-all nacl bot.py
-
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
