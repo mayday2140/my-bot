@@ -5,7 +5,7 @@ from datetime import datetime
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
-# --- 1. 設定檔管理 ---
+# --- 1. 設定檔讀取 ---
 def load_config():
     p = "config.txt"
     if not os.path.exists(p):
@@ -25,7 +25,7 @@ C = load_config()
 
 class StandXBot:
     def __init__(self):
-        # 修正：BASE_URL 應保持為主網域，由程式內部拼接路徑
+        # 修正：BASE_URL 保持為主網域，路徑由內部嘗試
         self.base_url = C.get("BASE_URL", "https://perps.standx.com").rstrip('/')
         self.ws_url = "wss://perps.standx.com/ws-stream/v1"
         self.mid_price = 0.0
@@ -35,8 +35,7 @@ class StandXBot:
         self.signer = SigningKey(pk, encoder=HexEncoder)
         self.headers = {
             "Authorization": f"Bearer {C.get('JWT_TOKEN', '')}",
-            "Content-Type": "application/json",
-            "Accept": "application/json"
+            "Content-Type": "application/json"
         }
         self.start_ws()
 
@@ -57,47 +56,44 @@ class StandXBot:
         rid, ts = str(uuid.uuid4()), str(int(time.time() * 1000))
         msg = f"v1,{rid},{ts},{body}"
         sig = base64.b64encode(self.signer.sign(msg.encode()).signature).decode()
-        return {"x-request-sign-version": "v1", "x-request-id": rid, "x-request-id": rid, "x-request-timestamp": ts, "x-request-signature": sig}
+        return {"x-request-sign-version": "v1", "x-request-id": rid, "x-request-timestamp": ts, "x-request-signature": sig}
 
     def place_order(self, side, price):
-        # 修正：針對 StandX 網頁端可能的 API 路由進行全掃描
-        # 通常 /api/v1/orders 或 /api/orders 是正確的
-        endpoints = ["/api/v1/orders", "/api/orders", "/v1/api/orders"]
+        # 下單路徑深度探測
+        endpoints = ["/api/v1/orders", "/api/orders"]
         
-        # 價格校準：根據 image_823fd4.png，BTC 價格顯示為整數
+        # 價格校準：根據成功截圖，BTC 價格使用整數
+        px_str = str(round(price))
         data = {
             "symbol": C.get("SYMBOL", "BTC-USD"),
             "side": side,
             "type": "LIMIT",
-            "price": str(round(price)),
+            "price": px_str,
             "qty": str(C.get("ORDER_QTY", "0.05"))
         }
         body = json.dumps(data, separators=(',', ':'))
         
-        last_status = "連線超時"
+        last_status = "404"
         for path in endpoints:
             try:
                 url = self.base_url + path
-                # 增加 timeout 避免超時報錯
-                res = requests.post(url, data=body, headers={**self.headers, **self.sign(body)}, timeout=10)
+                res = requests.post(url, data=body, headers={**self.headers, **self.sign(body)}, timeout=5)
                 if res.status_code == 200: return "成功 ✅"
                 last_status = str(res.status_code)
-                if res.status_code == 401: return "驗證失敗(401)"
             except:
-                continue
+                last_status = "連線超時"
         return f"失敗({last_status})"
 
     def run(self):
-        print(f"機器人運行中 | 目標數量: {C.get('ORDER_QTY')} | 頻率: {C.get('REFRESH_RATE')}s")
+        print(f"機器人已啟動 | 數量: {C.get('ORDER_QTY')} | 頻率: {C.get('REFRESH_RATE')}s")
         while True:
             if self.mid_price == 0:
                 time.sleep(0.1); continue
             
-            # 使用 BPS 計算間距
             gap = self.mid_price * (int(C.get("TARGET_BPS", 8)) / 10000)
             bid, ask = self.mid_price - gap, self.mid_price + gap
 
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Px: {self.mid_price:,.2f} | 買單: {self.place_order('BUY', bid)} | 賣單: {self.place_order('SELL', ask)}")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Px: {self.mid_price:,.2f} | 買: {self.place_order('BUY', bid)} | 賣: {self.place_order('SELL', ask)}")
             time.sleep(float(C.get("REFRESH_RATE", 0.5)))
 
 if __name__ == "__main__":
