@@ -12,7 +12,7 @@ def load_config_txt():
     if not os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             f.write("JWT_TOKEN=你的JWT\nPRIVATE_KEY_HEX=你的私鑰\nSYMBOL=BTC-USD\nBASE_URL=https://perps.standx.com\nORDER_QTY=0.1\nTARGET_BPS=8\nMIN_BPS=6\nMAX_BPS=10\nREFRESH_RATE=0.5\n")
-        print("已產生 config.txt，請填寫後重開。")
+        print("已產生 config.txt，請填寫並存檔後重新啟動。")
         input(); sys.exit()
 
     conf = {}
@@ -39,14 +39,19 @@ CONFIG = load_config_txt()
 # --- 2. 交易核心 ---
 class StandXBot:
     def __init__(self):
-        self.base_url = CONFIG["BASE_URL"]
+        # 修正 Base URL 處理邏輯
+        self.base_url = CONFIG["BASE_URL"].rstrip('/')
         self.ws_url = "wss://perps.standx.com/ws-stream/v1"
         self.mid_price = 0.0
         
         pk = CONFIG["PRIVATE_KEY_HEX"]
         if pk.startswith("0x"): pk = pk[2:]
         self.signer = SigningKey(pk, encoder=HexEncoder)
-        self.headers = {"Authorization": f"Bearer {CONFIG['JWT_TOKEN']}", "Content-Type": "application/json"}
+        self.headers = {
+            "Authorization": f"Bearer {CONFIG['JWT_TOKEN']}", 
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
         self.start_ws()
 
     def start_ws(self):
@@ -67,17 +72,36 @@ class StandXBot:
         return {"x-request-sign-version": "v1", "x-request-id": rid, "x-request-timestamp": ts, "x-request-signature": sig}
 
     def place_order(self, side, price):
+        # 修正後的 API 下單路徑
         path = "/api/v1/orders"
+        url = self.base_url + path
+        
         px = str(round(price * 2) / 2) # BTC 步進 0.5
-        data = {"symbol": CONFIG["SYMBOL"], "side": side, "type": "LIMIT", "price": px, "qty": str(CONFIG["ORDER_QTY"])}
+        data = {
+            "symbol": CONFIG["SYMBOL"],
+            "side": side,
+            "type": "LIMIT",
+            "price": px,
+            "qty": str(CONFIG["ORDER_QTY"])
+        }
         body = json.dumps(data)
+        
         try:
-            res = requests.post(self.base_url + path, data=body, headers={**self.headers, **self.sign(body)}, timeout=5)
-            return "OK ✅" if res.status_code == 200 else f"Fail({res.status_code})"
-        except: return "Error"
+            # 合併 Signature Headers
+            current_headers = {**self.headers, **self.sign(body)}
+            res = requests.post(url, data=body, headers=current_headers, timeout=5)
+            
+            if res.status_code == 200:
+                return "成功 ✅"
+            else:
+                return f"Fail({res.status_code})"
+        except Exception as e:
+            return f"Error({str(e)})"
 
     def run(self):
-        print(f">>> 啟動頻率: {CONFIG['REFRESH_RATE']}s")
+        print(f"==========================================")
+        print(f" StandX 自動掛單啟動 | 頻率: {CONFIG['REFRESH_RATE']}s")
+        print(f"==========================================")
         while True:
             if self.mid_price == 0:
                 time.sleep(0.1); continue
@@ -85,11 +109,17 @@ class StandXBot:
             gap = self.mid_price * (CONFIG["TARGET_BPS"] / 10000)
             bid, ask = self.mid_price - gap, self.mid_price + gap
 
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Px: {self.mid_price} | Buy: {self.place_order('BUY', bid)} | Sell: {self.place_order('SELL', ask)}")
+            now = datetime.now().strftime('%H:%M:%S')
+            # 執行買賣單
+            res_b = self.place_order('BUY', bid)
+            res_s = self.place_order('SELL', ask)
+            
+            print(f"[{now}] 市價: {self.mid_price:,.2f} | 買單: {res_b} | 賣單: {res_s}")
             time.sleep(CONFIG["REFRESH_RATE"])
 
 if __name__ == "__main__":
     try:
         StandXBot().run()
     except Exception as e:
-        print(f"錯誤: {e}"); input()
+        print(f"❌ 致命錯誤: {e}")
+        input("按任意鍵結束...")
