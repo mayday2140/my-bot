@@ -23,8 +23,8 @@ jobs:
       - name: Build EXE
         shell: pwsh
         run: |
-          # 確保 pyinstaller 包含所有 cffi 依賴
-          pyinstaller --onefile --console --name ProcyonsBot --collect-all cffi bot.py
+          # 修正打包邏輯，強制包含所有依賴
+          pyinstaller --onefile --console --name ProcyonsBot --collect-all cffi --collect-all nacl bot.py
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
