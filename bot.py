@@ -6,32 +6,29 @@ from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
 # --- 讀取設定檔 ---
-CONFIG_FILE = "config.txt"
-
-def load_config_txt():
-    if not os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            f.write("=== StandX Bot 設定檔 ===\nJWT=貼上你的JWT\nSECRET=貼上你的私鑰\nSYMBOL=BTC-USD\nQTY=0.01\nTARGET_BPS=8\n")
-        print(f"已產生 {CONFIG_FILE}，請填寫後重開。")
-        input("按任意鍵退出..."); sys.exit()
+def load_config():
     conf = {}
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+    if not os.path.exists("config.txt"):
+        print("找不到 config.txt，請先產生。")
+        input(); sys.exit()
+    with open("config.txt", "r", encoding="utf-8") as f:
         for line in f:
             if "=" in line:
                 k, v = line.split("=", 1)
                 conf[k.strip()] = v.strip().replace(",", "").replace(" ", "")
     return conf
 
-CONFIG = load_config_txt()
+CONFIG = load_config()
 
 class StandXBot:
     def __init__(self):
         self.base_url = "https://perps.standx.com"
         self.ws_url = "wss://perps.standx.com/ws-stream/v1"
         self.mid_price = 0.0
-        # 私鑰格式校正
-        pk = CONFIG["SECRET"][2:] if CONFIG["SECRET"].startswith("0x") else CONFIG["SECRET"]
-        self.signer = SigningKey(pk, encoder=HexEncoder)
+        # 私鑰處理
+        pk_str = CONFIG["SECRET"]
+        if pk_str.startswith("0x"): pk_str = pk_str[2:]
+        self.signer = SigningKey(pk_str, encoder=HexEncoder)
         self.headers = {"Authorization": f"Bearer {CONFIG['JWT']}", "Content-Type": "application/json"}
         self.start_ws()
 
@@ -54,20 +51,21 @@ class StandXBot:
 
     def place_order(self, side, price):
         path = "/api/v1/orders"
-        # 價格精確到 0.5 (StandX BTC 規範)
+        # 價格精確到 0.5
         px = str(round(price * 2) / 2)
         data = {"symbol": CONFIG["SYMBOL"], "side": side, "type": "LIMIT", "price": px, "qty": str(CONFIG["QTY"])}
         body = json.dumps(data)
         try:
             res = requests.post(self.base_url + path, data=body, headers={**self.headers, **self.sign(body)}, timeout=5)
-            if res.status_code == 401: return "JWT 過期或無效"
-            if res.status_code == 400: return f"參數錯誤: {res.text}"
-            return res.json() if res.text else "伺服器回傳空值 (請檢查餘額)"
+            if res.status_code == 200:
+                return "成功掛單 ✅"
+            else:
+                return f"失敗 ❌ (代碼: {res.status_code}, 內容: {res.text if res.text else '空回傳，請檢查保證金是否劃轉'})"
         except Exception as e:
-            return f"連線錯誤: {e}"
+            return f"連線異常: {e}"
 
     def run_trading(self):
-        print(">>> 機器人啟動，正在嘗試掛單...")
+        print(f">>> 機器人啟動中... 目標: {CONFIG['SYMBOL']} (QTY: {CONFIG['QTY']})")
         while True:
             if self.mid_price == 0:
                 time.sleep(1); continue
@@ -75,6 +73,17 @@ class StandXBot:
             gap = self.mid_price * (int(CONFIG.get("TARGET_BPS", 8)) / 10000)
             bid, ask = self.mid_price - gap, self.mid_price + gap
 
-            print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 市價: {self.mid_price}")
-            print(f"買單結果: {self.place_order('BUY', bid)}")
-            print(f"賣單結果: {self.place_order('SELL', ask)}")
+            print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 市場價格: {self.mid_price}")
+            print(f"嘗試掛單 [買]: {bid:.1f} -> {self.place_order('BUY', bid)}")
+            print(f"嘗試掛單 [賣]: {ask:.1f} -> {self.place_order('SELL', ask)}")
+            
+            # 等待下次循環
+            time.sleep(20)
+
+if __name__ == "__main__":
+    try:
+        bot = StandXBot()
+        bot.run_trading()
+    except Exception as e:
+        print(f"\n❌ 程式崩潰原因: {e}")
+        input("\n按任意鍵結束視窗，修正後再試一次...")
