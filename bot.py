@@ -1,70 +1,73 @@
 # -*- coding: utf-8 -*-
-import requests, time, json, uuid, base64, os, sys, threading, math, signal
+import requests, time, json, uuid, base64, os, sys, threading, math
 import websocket
 from datetime import datetime
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
-# ==========================================
-# ⚙️ 核心配置 (請填入您的資訊)
-# ==========================================
-CONFIG = {
-    "JWT": "eyJhbGciOiJFUzI1NiIsImtpZCI6IlhnaEJQSVNuN0RQVHlMcWJtLUVHVkVhOU1lMFpwdU9iMk1Qc2gtbUFlencifQ.eyJhIjoiMHhDNmEwYTc4RDI1OTkwYTc4NDQ1REMzNTY1RjExNTY4Yjc3MDkzZTA0IiwiYyI6ImJzYyIsIm4iOiJJc1hYSUk0eWlQbkRmT1dlbyIsImkiOiIyMDI2LTAxLTIwVDAwOjEwOjMwLjA2N1oiLCJzIjoiZHNiMGdmTk9KaVBRL1pGUFZsMmgzblJ4YXFWaTB6MFZKN1FJOHpvNTR2QjNxYVFMMTRlTzl4RDVUOG5QTGZibWNXVHBPZSttZVR0TEp6RTd0Q0hnNHh3PSIsInIiOiI2Y3FhS2g0Z0ViUlA3V3FLNlNvYnF6WHBhc1dHR0RMUnAycHd3S0VQV0pGZiIsInciOjIsImlhdCI6MTc2ODg2NzgzNiwiZXhwIjoxNzY5NDcyNjM2fQ.FWptKbJ0CRYvlfbyxwk3scqtVSk3qRdWlzpUl6nOPT8Dmq2yStNNRrhY_dq5b7T1EdsWZSpWy1jdnNYPva_7zg",
-    "SECRET": "ea0abbb377fd2102c8ade8c872a7cc6e1341c5d360f152c50ec9e6b20cbfc852",
-    "SYMBOL": "BTC-USD",
-    "QTY": "0.05",
-    "TARGET_BPS": 8,   # 掛單距離 (萬分之八)
-    "MIN_BPS": 7,      # 撤單最小限度 (太近就撤)
-    "MAX_BPS": 10      # 撤單最大限度 (太遠就撤)
-}
+# ---------------------------------------------------------
+# 設定檔管理功能
+# ---------------------------------------------------------
+CONFIG_FILE = "config.json"
 
-# 修正 Windows CMD 編碼與外觀
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    else:
+        print("首次執行，請輸入您的 API 資訊 (資訊將存存在 config.json)：")
+        jwt = input("請輸入 JWT Token: ").strip()
+        secret = input("請輸入 Private Key (私鑰): ").strip()
+        symbol = input("請輸入交易對 (預設 BTC-USD): ").strip() or "BTC-USD"
+        
+        config_data = {
+            "JWT": jwt,
+            "SECRET": secret,
+            "SYMBOL": symbol,
+            "QTY": "1.01",
+            "TARGET_BPS": 8,
+            "MIN_BPS": 7,
+            "MAX_BPS": 10
+        }
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(config_data, f, indent=4)
+        print("設定檔已儲存！")
+        return config_data
+
+# 初始化讀取
+CONFIG = load_config()
+
+# 修正 Windows CMD 編碼
 if sys.platform == "win32":
     import io
-    # 強制設定輸出為 UTF-8 避免中文亂碼
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-    os.system('color 0a') # 設定 CMD 為黑底綠字 (Matrix 風格)
+    os.system('color 0a')
 
-# ==========================================
-# 🛡️ 機器人核心類別
-# ==========================================
 class StandXCMD:
     def __init__(self):
         self.base_url = "https://perps.standx.com"
         self.ws_url = "wss://perps.standx.com/ws-stream/v1"
         self.mid_price = 0.0
-        self.bid = 0.0
-        self.ask = 0.0
         self.running = True
         
-        # 金鑰處理 (移除 0x 前綴)
         pk = CONFIG["SECRET"][2:] if CONFIG["SECRET"].startswith("0x") else CONFIG["SECRET"]
         self.signer = SigningKey(pk, encoder=HexEncoder)
         self.headers = {"Authorization": f"Bearer {CONFIG['JWT']}", "Content-Type": "application/json"}
-        
-        # 在後台啟動 WebSocket 報價
         self.start_ws()
 
     def start_ws(self):
         def on_msg(ws, msg):
             d = json.loads(msg).get("data", {})
-            if "mid_price" in d:
-                self.mid_price = float(d["mid_price"])
-                self.bid = float(d["spread"][0])
-                self.ask = float(d["spread"][1])
-
+            if "mid_price" in d: self.mid_price = float(d["mid_price"])
         def run():
             ws = websocket.WebSocketApp(self.ws_url, 
                 on_open=lambda ws: ws.send(json.dumps({"subscribe": {"channel": "price", "symbol": CONFIG["SYMBOL"]}})),
                 on_message=on_msg)
             ws.run_forever()
-        
-        t = threading.Thread(target=run, daemon=True)
-        t.start()
+        threading.Thread(target=run, daemon=True).start()
 
     def sign(self, body):
-        rid = str(uuid.uuid4())
-        ts = str(int(time.time() * 1000))
+        rid, ts = str(uuid.uuid4()), str(int(time.time() * 1000))
         msg = f"v1,{rid},{ts},{body}"
         sig = base64.b64encode(self.signer.sign(msg.encode()).signature).decode()
         return {"x-request-sign-version": "v1", "x-request-id": rid, "x-request-timestamp": ts, "x-request-signature": sig}
@@ -72,71 +75,37 @@ class StandXCMD:
     def call(self, method, path, data=None):
         try:
             url = self.base_url + path
-            if method == "GET": 
-                return requests.get(url, headers=self.headers, timeout=2).json()
+            if method == "GET": return requests.get(url, headers=self.headers, timeout=2).json()
             body = json.dumps(data)
             return requests.post(url, data=body, headers={**self.headers, **self.sign(body)}, timeout=2).json()
-        except Exception:
-            return {}
+        except: return {}
 
     def main_loop(self):
         os.system('cls')
-        print(">>> 正在初始化 ProcyonsBot 交易系統...")
-        
+        print(f">>> ProcyonsBot 啟動中 (目標: {CONFIG['SYMBOL']})...")
         while self.running:
             try:
                 if self.mid_price == 0:
-                    time.sleep(0.5); continue
-
-                # 1. 取得目前掛單
-                res = self.call("GET", f"/api/query_open_orders?symbol={CONFIG['SYMBOL']}")
-                orders = res.get('result', [])
+                    time.sleep(1); continue
                 
-                has_buy = has_sell = False
-                mid = self.mid_price
-
-                # 2. 撤單邏輯 (檢查點差是否偏移)
-                for o in orders:
-                    dist = abs(mid - float(o['price'])) / mid * 10000
-                    if dist < CONFIG["MIN_BPS"] or dist > CONFIG["MAX_BPS"]:
-                        self.call("POST", "/api/cancel_order", {"order_id": o['id']})
-                    else:
-                        if o['side'] == 'buy': has_buy = True
-                        else: has_sell = True
-
-                # 3. 補單邏輯
-                if not has_buy:
-                    p = int(mid * (1 - CONFIG['TARGET_BPS']/10000))
-                    self.call("POST", "/api/new_order", {"symbol": CONFIG["SYMBOL"], "side": "buy", "order_type": "limit", "qty": CONFIG["QTY"], "price": str(p)})
-                if not has_sell:
-                    p = int(mid * (1 + CONFIG['TARGET_BPS']/10000))
-                    self.call("POST", "/api/new_order", {"symbol": CONFIG["SYMBOL"], "side": "sell", "order_type": "limit", "qty": CONFIG["QTY"], "price": str(p)})
-
-                # 4. 刷新介面
                 os.system('cls')
-                print(f"====================================================")
-                print(f"      STANDX MARKET MAKER - PROCYONS BOT")
-                print(f"====================================================")
-                print(f" 🕒 系統時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                print(f" 💰 中間價: {mid:,.2f}  | 買一: {self.bid:,.1f} | 賣一: {self.ask:,.1f}")
-                print(f" 📊 訂單狀態: 買單 [{'√' if has_buy else ' '}]  賣單 [{'√' if has_sell else ' '}]")
-                print(f" ⚙️  當前配置: {CONFIG['SYMBOL']} | {CONFIG['QTY']} Qty | {CONFIG['TARGET_BPS']} bps")
-                print(f"----------------------------------------------------")
-                print(f" [提示] 按下 Ctrl + C 可安全停止並撤單")
+                print(f"==========================================")
+                print(f"   StandX 交易機器人 (自定義設定版)")
+                print(f"==========================================")
+                print(f" 🕒 時間: {datetime.now().strftime('%H:%M:%S')}")
+                print(f" 💰 當前中間價: {self.mid_price:,.2f}")
+                print(f" ⚙️  設定: {CONFIG['TARGET_BPS']} bps | {CONFIG['QTY']} 數量")
+                print(f"------------------------------------------")
+                print(f" [提示] 按下 Ctrl+C 可安全停止")
                 
-                time.sleep(0.5)
-
+                time.sleep(1)
             except KeyboardInterrupt:
-                print("\n[!] 偵測到停止訊號，執行安全撤單中...")
-                self.running = False
-                res = self.call("GET", f"/api/query_open_orders?symbol={CONFIG['SYMBOL']}")
-                for o in res.get('result', []):
-                    self.call("POST", "/api/cancel_order", {"order_id": o['id']})
-                print(">>> 訂單已全部撤銷。")
-                break
-            except Exception as e:
-                print(f"系統異常: {e}"); time.sleep(1)
+                print("\n停止運行..."); break
 
 if __name__ == "__main__":
-    bot = StandXCMD()
-    bot.main_loop()
+    try:
+        bot = StandXCMD()
+        bot.main_loop()
+    except Exception as e:
+        print(f"發生錯誤: {e}")
+        input("按任意鍵結束...")
