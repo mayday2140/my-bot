@@ -5,7 +5,7 @@ from datetime import datetime
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
-# --- 1. 設定檔管理 ---
+# --- 1. 設定檔管理 (自動清理空格與逗號) ---
 CONFIG_FILE = "config.txt"
 
 def load_config_txt():
@@ -17,8 +17,6 @@ def load_config_txt():
             f.write("SYMBOL=BTC-USD\n")
             f.write("QTY=0.01\n")
             f.write("TARGET_BPS=8\n")
-            f.write("MIN_BPS=7\n")
-            f.write("MAX_BPS=10\n")
         print(f"已產生 {CONFIG_FILE}，請填寫後重開。")
         input("按任意鍵退出..."); sys.exit()
 
@@ -44,21 +42,23 @@ def load_config_txt():
 
 CONFIG = load_config_txt()
 
-# --- 2. 交易核心邏輯 ---
+# --- 2. 核心交易機器人 ---
 class StandXBot:
     def __init__(self):
         self.base_url = "https://perps.standx.com"
         self.ws_url = "wss://perps.standx.com/ws-stream/v1"
         self.mid_price = 0.0
-        pk = CONFIG["SECRET"][2:] if CONFIG["SECRET"].startswith("0x") else CONFIG["SECRET"]
-        self.signer = SigningKey(pk, encoder=HexEncoder)
+        # 處理私鑰
+        pk_str = CONFIG["SECRET"]
+        if pk_str.startswith("0x"): pk_str = pk_str[2:]
+        self.signer = SigningKey(pk_str, encoder=HexEncoder)
         self.headers = {"Authorization": f"Bearer {CONFIG['JWT']}", "Content-Type": "application/json"}
         self.start_ws()
 
     def start_ws(self):
         def on_msg(ws, msg):
-            data = json.loads(msg).get("data", {})
-            if "mid_price" in data: self.mid_price = float(data["mid_price"])
+            d = json.loads(msg).get("data", {})
+            if "mid_price" in d: self.mid_price = float(d["mid_price"])
         def run():
             ws = websocket.WebSocketApp(self.ws_url, 
                 on_open=lambda ws: ws.send(json.dumps({"subscribe": {"channel": "price", "symbol": CONFIG["SYMBOL"]}})),
@@ -74,35 +74,46 @@ class StandXBot:
 
     def place_order(self, side, price):
         path = "/api/v1/orders"
-        order_data = {
-            "symbol": CONFIG["SYMBOL"],
-            "side": side,
-            "type": "LIMIT",
-            "price": str(price),
-            "qty": CONFIG["QTY"]
-        }
-        body = json.dumps(order_data)
+        data = {"symbol": CONFIG["SYMBOL"], "side": side, "type": "LIMIT", "price": str(price), "qty": str(CONFIG["QTY"])}
+        body = json.dumps(data)
         try:
-            res = requests.post(self.base_url + path, data=body, headers={**self.headers, **self.sign(body)}, timeout=3)
+            res = requests.post(self.base_url + path, data=body, headers={**self.headers, **self.sign(body)}, timeout=5)
             return res.json()
         except Exception as e:
             return {"error": str(e)}
 
-    def run_trading(self):
-        print(f">>> 啟動自動掛單 (目標: {CONFIG['SYMBOL']})")
+    def start_trading_loop(self):
+        print(">>> 交易系統啟動，等待價格數據...")
         while True:
-            if self.mid_price == 0:
-                time.sleep(1); continue
-            
-            # 計算買賣價格 (根據 BPS)
-            spread = self.mid_price * (CONFIG["TARGET_BPS"] / 10000)
-            bid_px = round(self.mid_price - spread, 2)
-            ask_px = round(self.mid_price + spread, 2)
+            try:
+                if self.mid_price == 0:
+                    time.sleep(1); continue
+                
+                # 計算 BPS 價位
+                gap = self.mid_price * (CONFIG["TARGET_BPS"] / 10000)
+                buy_px = round(self.mid_price - gap, 2)
+                sell_px = round(self.mid_price + gap, 2)
 
-            os.system('cls' if os.name == 'nt' else 'clear')
-            print(f"--- StandX 交易中 --- {datetime.now().strftime('%H:%M:%S')}")
-            print(f"當前市價: {self.mid_price:,.2f}")
-            print(f"嘗試掛單: 買入 {bid_px} | 賣出 {ask_px}")
-            
-            # 送出訂單
-            r_bid = self
+                print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 市價: {self.mid_price}")
+                print(f"嘗試下單 -> 買: {buy_px} | 賣: {sell_px}")
+
+                # 執行下單
+                r1 = self.place_order("BUY", buy_px)
+                r2 = self.place_order("SELL", sell_px)
+
+                print(f"結果 -> 買入: {r1.get('status', r1.get('error', 'Unknown'))} | 賣出: {r2.get('status', r2.get('error', 'Unknown'))}")
+                
+                # 每 15 秒運行一次
+                time.sleep(15)
+            except Exception as e:
+                print(f"循環出錯: {e}")
+                time.sleep(5)
+
+if __name__ == "__main__":
+    try:
+        if sys.platform == "win32": os.system('')
+        bot = StandXBot()
+        bot.start_trading_loop()
+    except Exception as e:
+        print(f"\n❌ 啟動失敗: {e}")
+        input("\n按任意鍵結束並檢查錯誤...")
