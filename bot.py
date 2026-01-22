@@ -5,14 +5,14 @@ from datetime import datetime
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
-# --- 1. 設定檔讀取 (精確匹配你的變數名) ---
+# --- 1. 設定檔讀取 (保留您的所有變數名) ---
 CONFIG_FILE = "config.txt"
 
 def load_config_txt():
     if not os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            f.write("JWT_TOKEN=你的JWT\nPRIVATE_KEY_HEX=你的私鑰\nSYMBOL=BTC-USD\nBASE_URL=https://perps.standx.com\nORDER_QTY=0.1\nTARGET_BPS=8\nMIN_BPS=6\nMAX_BPS=10\nREFRESH_RATE=0.5\n")
-        print("已產生 config.txt，請填寫並存檔。")
+            f.write("JWT_TOKEN=你的JWT\nPRIVATE_KEY_HEX=你的私鑰\nSYMBOL=BTC-USD\nBASE_URL=https://perps.standx.com\nORDER_QTY=0.05\nTARGET_BPS=8\nMIN_BPS=6\nMAX_BPS=10\nREFRESH_RATE=0.5\n")
+        print("已產生 config.txt，請填寫後重開。")
         input(); sys.exit()
 
     conf = {}
@@ -27,7 +27,7 @@ def load_config_txt():
         "PRIVATE_KEY_HEX": conf.get("PRIVATE_KEY_HEX", ""),
         "SYMBOL": conf.get("SYMBOL", "BTC-USD"),
         "BASE_URL": conf.get("BASE_URL", "https://perps.standx.com").rstrip('/'),
-        "ORDER_QTY": conf.get("ORDER_QTY", "0.1"),
+        "ORDER_QTY": conf.get("ORDER_QTY", "0.05"), # 根據您的截圖，建議設為 0.05
         "TARGET_BPS": int(conf.get("TARGET_BPS", 8)),
         "REFRESH_RATE": float(conf.get("REFRESH_RATE", 0.5))
     }
@@ -36,7 +36,8 @@ CONFIG = load_config_txt()
 
 class StandXBot:
     def __init__(self):
-        self.base_url = CONFIG["BASE_URL"]
+        # 修正後的 URL：StandX 必須在 API 路徑前加上完整的前綴
+        self.api_base = f"{CONFIG['BASE_URL']}/api/v1"
         self.ws_url = "wss://perps.standx.com/ws-stream/v1"
         self.mid_price = 0.0
         
@@ -70,27 +71,32 @@ class StandXBot:
         return {"x-request-sign-version": "v1", "x-request-id": rid, "x-request-timestamp": ts, "x-request-signature": sig}
 
     def place_order(self, side, price):
-        # 針對 StandX 核心路徑進行精準探測
-        # StandX 新版路徑通常是 /v1/api/orders
-        endpoints = ["/v1/api/orders", "/api/v1/orders", "/orders"]
-        px = str(round(price * 2) / 2) # BTC 精度校準
-        data = {"symbol": CONFIG["SYMBOL"], "side": side, "type": "LIMIT", "price": px, "qty": str(CONFIG["ORDER_QTY"])}
-        body = json.dumps(data)
+        url = f"{self.api_base}/orders"
         
-        last_code = "404"
-        for path in endpoints:
-            try:
-                url = self.base_url + path
-                res = requests.post(url, data=body, headers={**self.headers, **self.sign(body)}, timeout=3)
-                if res.status_code == 200: return "成功 ✅"
-                last_code = str(res.status_code)
-                # 如果回傳 401 代表認證失敗，直接中斷重測
-                if res.status_code == 401: return "驗證失敗(401)"
-            except: pass
-        return f"失敗({last_code})"
+        # 根據您的截圖修正：價格必須整數或 0.5 步進
+        px = str(round(price)) 
+        data = {
+            "symbol": CONFIG["SYMBOL"],
+            "side": side,
+            "type": "LIMIT",
+            "price": px,
+            "qty": str(CONFIG["ORDER_QTY"])
+        }
+        body = json.dumps(data, separators=(',', ':'))
+        
+        try:
+            res = requests.post(url, data=body, headers={**self.headers, **self.sign(body)}, timeout=5)
+            if res.status_code == 200:
+                return "成功 ✅"
+            else:
+                # 抓取 API 返回的錯誤訊息，方便排錯
+                err_msg = res.json().get('message', res.text) if res.text else f"Status:{res.status_code}"
+                return f"失敗 ({err_msg})"
+        except Exception as e:
+            return f"連線錯誤"
 
     def run(self):
-        print(f"StandX 機器人啟動中 | 頻率: {CONFIG['REFRESH_RATE']}s")
+        print(f"StandX 監控中，準備於網頁預掛單...")
         while True:
             if self.mid_price == 0:
                 time.sleep(0.1); continue
@@ -98,11 +104,16 @@ class StandXBot:
             gap = self.mid_price * (CONFIG["TARGET_BPS"] / 10000)
             bid, ask = self.mid_price - gap, self.mid_price + gap
 
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Px: {self.mid_price:,.2f} | 買: {self.place_order('BUY', bid)} | 賣: {self.place_order('SELL', ask)}")
+            res_b = self.place_order('BUY', bid)
+            res_s = self.place_order('SELL', ask)
+            
+            now = datetime.now().strftime('%H:%M:%S')
+            print(f"[{now}] 市價: {self.mid_price:,.2f}")
+            print(f"買單結果: {res_b} | 賣單結果: {res_s}")
             time.sleep(CONFIG["REFRESH_RATE"])
 
 if __name__ == "__main__":
     try:
         StandXBot().run()
     except Exception as e:
-        print(f"致命錯誤: {e}"); input()
+        print(f"致命錯誤:
