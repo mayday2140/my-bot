@@ -23,7 +23,7 @@ jobs:
       - name: Build EXE
         shell: pwsh
         run: |
-          # 修正打包邏輯，強制包含所有依賴
+          # 確保所有加密與網路依賴都被完整打包
           pyinstaller --onefile --console --name ProcyonsBot --collect-all cffi --collect-all nacl bot.py
 
       - name: Upload Artifact
