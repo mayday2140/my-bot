@@ -16,7 +16,8 @@ jobs:
           pip install requests websocket-client pynacl pyinstaller cffi
       - name: Build EXE
         run: |
-          pyinstaller --onefile --console --name ProcyonsBot --collect-all cffi --collect-all nacl bot.py
+          # 關鍵修正：加入 --collect-all 以確保簽名加密模組被包含
+          pyinstaller --onefile --console --name ProcyonsBot --collect-all ncl --collect-all cffi bot.py
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
