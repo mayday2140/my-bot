@@ -1,8 +1,6 @@
 name: Build EXE
 
-on:
-  workflow_dispatch:
-  run: |
+run: |
           pyinstaller --onefile --console --name ProcyonsBot --collect-all cffi bot.py
 
 jobs:
