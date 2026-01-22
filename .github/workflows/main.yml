@@ -1,7 +1,7 @@
 name: Build EXE
 
-run: |
-          pyinstaller --onefile --console --name ProcyonsBot --collect-all cffi bot.py
+on:
+  workflow_dispatch:
 
 jobs:
   build:
@@ -18,7 +18,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # 強制安裝 cffi 以解決編譯遺失問題
+          # 強制安裝所有可能遺失的依賴項
           pip install requests websocket-client pynacl pyinstaller cffi
 
       - name: Build EXE
@@ -26,7 +26,7 @@ jobs:
         run: |
           $targetFile = Get-ChildItem -Filter *.py | Select-Object -First 1 -ExpandProperty Name
           if (-not $targetFile) { Write-Error "找不到 .py 檔案！"; exit 1 }
-          # 加入 --collect-all cffi 參數，強制抓取依賴項
+          # --collect-all cffi 是解決 _cffi_backend 錯誤的核心指令
           pyinstaller --onefile --console --name ProcyonsBot --collect-all cffi $targetFile
 
       - name: Upload Artifact
