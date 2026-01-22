@@ -22,8 +22,8 @@ jobs:
 
       - name: Build EXE
         run: |
-          # 使用 --collect-all 確保加密庫完整打包，避免執行錯誤
-          pyinstaller --onefile --console --name ProcyonsBot --collect-all cffi --collect-all nacl bot.py
+          # 關鍵修正：加入 --collect-all nacl 確保加密組件完整包含
+          pyinstaller --onefile --console --name ProcyonsBot --collect-all nacl --collect-all cffi bot.py
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
