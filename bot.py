@@ -27,3 +27,21 @@ def load_config_txt():
         }
     except Exception as e:
         print(f"讀取錯誤: {e}"); input("按任意鍵退出..."); sys.exit()
+
+if __name__ == "__main__":
+    try:
+        # 強制 Windows 支援顏色與防止閃退
+        if sys.platform == "win32":
+            os.system('') 
+        
+        print(">>> 正在讀取設定並啟動...")
+        bot = StandXCMD()
+        bot.main_loop()
+    except Exception as e:
+        print("\n" + "!"*50)
+        print(f"❌ 程式發生錯誤，請檢查 config.txt 內容：")
+        print(f"錯誤訊息: {e}")
+        print("!"*50)
+        # 這一行會強迫視窗停住，不會跳掉
+        input("\n按任意鍵結束視窗，修正後再試一次...")
+
