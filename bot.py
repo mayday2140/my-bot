@@ -5,13 +5,22 @@ from datetime import datetime
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
-# --- 讀取設定 ---
+# --- 讀取設定檔 ---
 CONFIG_FILE = "config.txt"
 
 def load_config_txt():
-    # (此處保持之前的讀取邏輯不變...)
-    # ... 
-    return { "JWT": "...", "SECRET": "...", "SYMBOL": "BTC-USD", "QTY": "0.01", "TARGET_BPS": 8 }
+    if not os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            f.write("=== StandX Bot 設定檔 ===\nJWT=貼上你的JWT\nSECRET=貼上你的私鑰\nSYMBOL=BTC-USD\nQTY=0.01\nTARGET_BPS=8\n")
+        print(f"已產生 {CONFIG_FILE}，請填寫後重開。")
+        input("按任意鍵退出..."); sys.exit()
+    conf = {}
+    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            if "=" in line:
+                k, v = line.split("=", 1)
+                conf[k.strip()] = v.strip().replace(",", "").replace(" ", "")
+    return conf
 
 CONFIG = load_config_txt()
 
@@ -20,14 +29,22 @@ class StandXBot:
         self.base_url = "https://perps.standx.com"
         self.ws_url = "wss://perps.standx.com/ws-stream/v1"
         self.mid_price = 0.0
-        pk_str = CONFIG["SECRET"][2:] if CONFIG["SECRET"].startswith("0x") else CONFIG["SECRET"]
-        self.signer = SigningKey(pk_str, encoder=HexEncoder)
+        # 私鑰格式校正
+        pk = CONFIG["SECRET"][2:] if CONFIG["SECRET"].startswith("0x") else CONFIG["SECRET"]
+        self.signer = SigningKey(pk, encoder=HexEncoder)
         self.headers = {"Authorization": f"Bearer {CONFIG['JWT']}", "Content-Type": "application/json"}
         self.start_ws()
 
     def start_ws(self):
-        # (WebSocket 邏輯保持不變...)
-        pass
+        def on_msg(ws, msg):
+            d = json.loads(msg).get("data", {})
+            if "mid_price" in d: self.mid_price = float(d["mid_price"])
+        def run():
+            ws = websocket.WebSocketApp(self.ws_url, 
+                on_open=lambda ws: ws.send(json.dumps({"subscribe": {"channel": "price", "symbol": CONFIG["SYMBOL"]}})),
+                on_message=on_msg)
+            ws.run_forever()
+        threading.Thread(target=run, daemon=True).start()
 
     def sign(self, body):
         rid, ts = str(uuid.uuid4()), str(int(time.time() * 1000))
@@ -35,47 +52,29 @@ class StandXBot:
         sig = base64.b64encode(self.signer.sign(msg.encode()).signature).decode()
         return {"x-request-sign-version": "v1", "x-request-id": rid, "x-request-timestamp": ts, "x-request-signature": sig}
 
-    # 新增：取消該交易對的所有掛單
-    def cancel_all_orders(self):
-        path = f"/api/v1/orders/all?symbol={CONFIG['SYMBOL']}"
-        try:
-            res = requests.delete(self.base_url + path, headers={**self.headers, **self.sign("")}, timeout=5)
-            return res.status_code
-        except: return None
-
     def place_order(self, side, price):
         path = "/api/v1/orders"
-        tick = 0.5
-        px = str(round(price / tick) * tick)
-        data = {"symbol": CONFIG["SYMBOL"], "side": side, "type": "LIMIT", "price": px, "qty": CONFIG["QTY"]}
+        # 價格精確到 0.5 (StandX BTC 規範)
+        px = str(round(price * 2) / 2)
+        data = {"symbol": CONFIG["SYMBOL"], "side": side, "type": "LIMIT", "price": px, "qty": str(CONFIG["QTY"])}
         body = json.dumps(data)
         try:
             res = requests.post(self.base_url + path, data=body, headers={**self.headers, **self.sign(body)}, timeout=5)
-            return res.json() if res.text else {"status": "Fail (Check Balance/JWT)"}
+            if res.status_code == 401: return "JWT 過期或無效"
+            if res.status_code == 400: return f"參數錯誤: {res.text}"
+            return res.json() if res.text else "伺服器回傳空值 (請檢查餘額)"
         except Exception as e:
-            return {"status": f"Error: {e}"}
+            return f"連線錯誤: {e}"
 
-    def run_loop(self):
-        print(">>> 機器人已上線，正在嘗試在紅框處掛單...")
+    def run_trading(self):
+        print(">>> 機器人啟動，正在嘗試掛單...")
         while True:
             if self.mid_price == 0:
                 time.sleep(1); continue
             
-            # 1. 先清空舊單，確保網頁乾淨
-            self.cancel_all_orders()
-            
-            gap = self.mid_price * (CONFIG["TARGET_BPS"] / 10000)
+            gap = self.mid_price * (int(CONFIG.get("TARGET_BPS", 8)) / 10000)
             bid, ask = self.mid_price - gap, self.mid_price + gap
 
             print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 市價: {self.mid_price}")
-            
-            # 2. 下新單
-            r_b = self.place_order("BUY", bid)
-            r_s = self.place_order("SELL", ask)
-
-            print(f"買單: {r_b}")
-            print(f"賣單: {r_s}")
-            
-            time.sleep(15) 
-
-# (啟動代碼...)
+            print(f"買單結果: {self.place_order('BUY', bid)}")
+            print(f"賣單結果: {self.place_order('SELL', ask)}")
